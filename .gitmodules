@@ -1,0 +1,6 @@
+[submodule "vendor/iOpenPod"]
+	path = vendor/iOpenPod
+	url = https://github.com/TheRealSavi/iOpenPod.git
+[submodule "vendor/hashab-src"]
+	path = vendor/hashab-src
+	url = https://github.com/dstaley/hashab.git

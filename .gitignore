@@ -1,0 +1,8 @@
+# the iPod's real database: personal data + large binaries, kept local only
+backup/
+snapshots/
+
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

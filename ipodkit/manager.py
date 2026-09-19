@@ -1,0 +1,203 @@
+"""Programmatic library management for an iPod nano 7G.
+
+Thin layer over iOpenPod's engine (https://github.com/TheRealSavi/iOpenPod):
+load the library as plain dicts, mutate, save. Every save is
+
+  1. preceded by a snapshot of the on-device database directory,
+  2. followed by an independent hashAB verification (see verify.py) plus a
+     re-parse of what was written, and
+  3. rolled back from the snapshot automatically if either check fails,
+
+because a nano that sees a bad signature refuses the whole library.
+"""
+from __future__ import annotations
+
+import logging
+import random
+import secrets
+import shutil
+import string
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import iopenpod.itunesdb_writer.hashab as _hashab
+from iopenpod.device import identify_ipod_at_path, set_current_device
+from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
+from iopenpod.sync.quick_writes import write_cached_itunesdb
+
+from .verify import verify_itunes_dir
+
+log = logging.getLogger("ipodkit")
+
+# iOpenPod 1.68 signs the header with hashing_scheme=4 and then patches the
+# field to 3 *after* signing. The field is covered by the SHA1, so the result
+# never verifies. iTunes signs with 3 in place (proven by replaying iTunes' own
+# signatures through verify.py), so sign with 3.
+_hashab.ITDB_CHECKSUM_HASHAB = 3
+
+_EXT_FILETYPE = {".mp3": "MP3", ".m4a": "AAC", ".aac": "AAC", ".wav": "WAV", ".aif": "AIFF", ".aiff": "AIFF"}
+PLAYLIST_KEYS = ("mhlp", "mhlp_podcast", "mhlp_smart")
+
+
+class SaveError(RuntimeError):
+    pass
+
+
+@dataclass
+class SaveReport:
+    tracks: int
+    signatures: dict[str, bool]
+    snapshot: Path
+
+
+class IPod:
+    def __init__(self, mount: str | Path, snapshot_root: str | Path = "snapshots"):
+        self.mount = Path(mount)
+        self.itunes_dir = self.mount / "iPod_Control" / "iTunes"
+        self.snapshot_root = Path(snapshot_root)
+        self.device = identify_ipod_at_path(str(self.mount))
+        if self.device is None:
+            raise RuntimeError(f"No iPod identified at {self.mount}")
+        # The engine resolves capabilities (iTunesCDB compression, SQLite,
+        # checksum type) from this registry and silently degrades without it.
+        set_current_device(self.device)
+        self.fwid = bytes.fromhex(self.device.firewire_guid)
+        self.reload()
+
+    # ── read ────────────────────────────────────────────────────────────
+    def reload(self) -> None:
+        lib = load_ipod_library(str(self.itunes_dir / "iTunesCDB"))
+        if lib is None:
+            raise RuntimeError("Could not parse the iPod database")
+        self.tracks: list[dict] = lib["mhlt"]
+        self.playlists: list[dict] = [p for k in PLAYLIST_KEYS for p in lib.get(k, [])]
+
+    def user_playlists(self) -> list[dict]:
+        # The nano mirrors each user playlist across two datasets; show one.
+        seen: dict[int, dict] = {}
+        for p in self.playlists:
+            if not p.get("master_flag") and not p.get("mhsd5_type") and p.get("_mhsd_result_key") != "mhlp_smart":
+                seen.setdefault(p.get("playlist_id"), p)
+        return list(seen.values())
+
+    def add_to_playlist(self, playlist: dict, track: dict) -> None:
+        for p in self.playlists:  # keep every mirrored copy in step
+            if p.get("playlist_id") == playlist.get("playlist_id"):
+                p.setdefault("items", []).append({"track_id": track["track_id"]})
+
+    def find_tracks(self, query: str) -> list[dict]:
+        q = query.lower()
+        return [t for t in self.tracks
+                if q in " ".join(str(t.get(k) or "") for k in ("Title", "Artist", "Album")).lower()]
+
+    def find_playlist(self, name: str) -> dict | None:
+        return next((p for p in self.user_playlists() if p.get("Title") == name), None)
+
+    def verify(self) -> dict[str, bool]:
+        return verify_itunes_dir(self.itunes_dir, self.fwid)
+
+    # ── mutate (in memory until save) ───────────────────────────────────
+    def add_track(self, src: str | Path, **tags) -> dict:
+        """Copy an audio file onto the iPod and add it to the library."""
+        from mutagen import File as MutagenFile
+
+        src = Path(src)
+        ext = src.suffix.lower()
+        if ext not in _EXT_FILETYPE:
+            raise ValueError(f"Unsupported format {ext}; the nano plays {sorted(_EXT_FILETYPE)}")
+        audio = MutagenFile(src, easy=True)
+        if audio is None:
+            raise ValueError(f"Not a readable audio file: {src}")
+
+        music = self.mount / "iPod_Control" / "Music"
+        folder = random.choice(sorted(d for d in music.iterdir() if d.is_dir()))
+        while True:
+            dest = folder / ("".join(random.choices(string.ascii_uppercase, k=4)) + ext)
+            if not dest.exists():
+                break
+        shutil.copyfile(src, dest)
+
+        def tag(key: str) -> str | None:
+            return (audio.tags or {}).get(key, [None])[0] if audio.tags else None
+
+        now = int(time.time())
+        track = {
+            "Title": tags.get("title") or tag("title") or src.stem,
+            "Artist": tags.get("artist") or tag("artist"),
+            "Album": tags.get("album") or tag("album"),
+            "Album Artist": tags.get("album_artist") or tag("albumartist"),
+            "Genre": tags.get("genre") or tag("genre"),
+            "Location": ":" + ":".join(dest.relative_to(self.mount).parts),
+            "filetype": _EXT_FILETYPE[ext],
+            "size": dest.stat().st_size,
+            "length": int(audio.info.length * 1000),
+            "bitrate": int(getattr(audio.info, "bitrate", 0) / 1000),
+            "sample_rate_1": int(getattr(audio.info, "sample_rate", 44100)),
+            "date_added": now,
+            "last_modified": now,
+            "media_type": 1,
+            "track_id": max((t.get("track_id", 0) for t in self.tracks), default=0) + 1,
+            "db_track_id": secrets.randbits(63) | 1,
+        }
+        self.tracks.append(track)
+        self._master()["items"].append({"track_id": track["track_id"]})
+        return track
+
+    def remove_track(self, track: dict, delete_file: bool = True) -> None:
+        self.tracks.remove(track)
+        for p in self.playlists:
+            p["items"] = [i for i in p.get("items", []) if i.get("track_id") != track.get("track_id")]
+        if delete_file:
+            f = self.mount.joinpath(*track["Location"].strip(":").split(":"))
+            f.unlink(missing_ok=True)
+
+    def create_playlist(self, name: str, tracks: list[dict] = ()) -> dict:
+        pl = {"Title": name, "playlist_id": secrets.randbits(63) | 1, "timestamp": int(time.time()),
+              "sort_order": 1, "items": [{"track_id": t["track_id"]} for t in tracks]}
+        self.playlists.append(pl)
+        return pl
+
+    def delete_playlist(self, playlist: dict) -> None:
+        # User playlists are mirrored across datasets; drop every copy.
+        self.playlists = [p for p in self.playlists if p.get("playlist_id") != playlist.get("playlist_id")]
+
+    def _master(self) -> dict:
+        return next(p for p in self.playlists if p.get("master_flag"))
+
+    # ── write ───────────────────────────────────────────────────────────
+    def snapshot(self) -> Path:
+        dest = self.snapshot_root / time.strftime("%Y%m%d-%H%M%S")
+        n = 0
+        while dest.exists():
+            n += 1
+            dest = dest.with_name(f"{dest.name.split('_')[0]}_{n}")
+        shutil.copytree(self.itunes_dir, dest / "iTunes", copy_function=shutil.copyfile)
+        return dest
+
+    def restore(self, snapshot: Path) -> None:
+        for f in (snapshot / "iTunes").rglob("*"):
+            if f.is_file() and not f.name.startswith("._"):
+                target = self.itunes_dir / f.relative_to(snapshot / "iTunes")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(f, target)
+
+    def save(self) -> SaveReport:
+        snap = self.snapshot()
+        expected = len(self.tracks)
+        try:
+            result = write_cached_itunesdb(str(self.mount), tracks_data=self.tracks, playlists_data=self.playlists)
+            if not result.success:
+                raise SaveError(f"engine refused the write: {result.error}")
+            sigs = self.verify()
+            if not all(sigs.values()):
+                raise SaveError(f"written database fails hashAB verification: {sigs}")
+            self.reload()
+            if len(self.tracks) != expected:
+                raise SaveError(f"re-read {len(self.tracks)} tracks, expected {expected}")
+        except Exception:
+            log.error("save failed; restoring database from %s", snap)
+            self.restore(snap)
+            self.reload()
+            raise
+        return SaveReport(tracks=expected, signatures=sigs, snapshot=snap)
