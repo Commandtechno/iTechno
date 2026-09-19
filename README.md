@@ -24,7 +24,7 @@ helper_script "spotify_id" "title" "album" "artist1" ["artist2"...] < ogg_stream
 The script `tag_ogg` in the source tree can be used to automatically add the track information (spotify ID, title, album, artists) as vorbis comments.
 
 ## Serve mode
-`oggify serve` turns oggify into a Spotify backend for another program (it is what `../ipod/sync.py` drives to sync
+`oggify serve` turns oggify into a Spotify backend for another program (it is what `../sync.py` drives to sync
 an iPod): one request per stdin line, one JSON reply per stdout line, logs and the login prompt on stderr.
 ```
 rootlist                  -> {"playlists": [{"id", "name", "length", "owner"}]}   your playlists
