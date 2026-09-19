@@ -11,10 +11,19 @@ readme = "README.md"
 
 [dependencies]
 tokio = { version = "1.13.0", features = ["rt-multi-thread", "time"] }
-librespot-core = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.3.1" }
-librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.3.1" }
-librespot-audio = { git = "https://github.com/librespot-org/librespot.git", tag = "v0.3.1" }
+librespot-core = "0.8.0"
+librespot-metadata = "0.8.0"
+librespot-audio = "0.8.0"
+librespot-discovery = "0.8.0"
 regex = "1.1.0"
 log = "0.4.6"
 env_logger = "0.6.0"
-scoped_threadpool = "0.1.9"
+futures-util = "0.3"
+sha1 = "0.10"
+serde_json = "1"
+protobuf = "3"
+http = "1"
+
+# libmdns does not get along with the system mDNSResponder, register through Bonjour instead
+[target.'cfg(target_os = "macos")'.dependencies]
+librespot-discovery = { version = "0.8.0", features = ["with-dns-sd"] }
