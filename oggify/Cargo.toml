@@ -1,0 +1,29 @@
+[package]
+name = "oggify"
+version = "0.1.0"
+authors = ["Lorenzo Pistone <blaffablaffa@gmail.com>"]
+edition = "2018"
+license = "MIT"
+description = "Download Spotify tracks to Ogg Vorbis format with a Premium account"
+keywords = ["spotify"]
+repository = "https://github.com/pisto/oggify"
+readme = "README.md"
+
+[dependencies]
+tokio = { version = "1.13.0", features = ["rt-multi-thread", "time"] }
+librespot-core = "0.8.0"
+librespot-metadata = "0.8.0"
+librespot-audio = "0.8.0"
+librespot-discovery = "0.8.0"
+regex = "1.1.0"
+log = "0.4.6"
+env_logger = "0.6.0"
+futures-util = "0.3"
+sha1 = "0.10"
+serde_json = "1"
+protobuf = "3"
+http = "1"
+
+# libmdns does not get along with the system mDNSResponder, register through Bonjour instead
+[target.'cfg(target_os = "macos")'.dependencies]
+librespot-discovery = { version = "0.8.0", features = ["with-dns-sd"] }
