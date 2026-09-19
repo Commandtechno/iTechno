@@ -55,7 +55,10 @@ class IPod:
     def __init__(self, mount: str | Path, snapshot_root: str | Path = "snapshots"):
         self.mount = Path(mount)
         self.itunes_dir = self.mount / "iPod_Control" / "iTunes"
+        self.artwork_db = self.mount / "iPod_Control" / "Artwork" / "ArtworkDB"
         self.snapshot_root = Path(snapshot_root)
+        self.keep_snapshots = 5  # of each kind (see snapshot); each is ~20MB, a batched sync takes one per batch
+        self._snapshotted = False
         self.device = identify_ipod_at_path(str(self.mount))
         if self.device is None:
             raise RuntimeError(f"No iPod identified at {self.mount}")
@@ -70,8 +73,13 @@ class IPod:
         lib = load_ipod_library(str(self.itunes_dir / "iTunesCDB"))
         if lib is None:
             raise RuntimeError("Could not parse the iPod database")
+        self._loaded = self._db_stamp()
         self.tracks: list[dict] = lib["mhlt"]
         self.playlists: list[dict] = [p for k in PLAYLIST_KEYS for p in lib.get(k, [])]
+
+    def _db_stamp(self) -> tuple[int, int]:
+        st = (self.itunes_dir / "iTunesCDB").stat()
+        return st.st_mtime_ns, st.st_size
 
     def user_playlists(self) -> list[dict]:
         # The nano mirrors each user playlist across two datasets; show one.
@@ -98,8 +106,21 @@ class IPod:
         return verify_itunes_dir(self.itunes_dir, self.fwid)
 
     # ── mutate (in memory until save) ───────────────────────────────────
-    def add_track(self, src: str | Path, **tags) -> dict:
-        """Copy an audio file onto the iPod and add it to the library."""
+    def alloc_path(self, ext: str) -> Path:
+        """Pick an unused on-device path, so callers can journal it before copying."""
+        music = self.mount / "iPod_Control" / "Music"
+        folders = sorted(d for d in music.iterdir() if d.is_dir())
+        while True:
+            dest = random.choice(folders) / ("".join(random.choices(string.ascii_uppercase, k=4)) + ext.lower())
+            if not dest.exists():
+                return dest
+
+    def add_track(self, src: str | Path, dest: Path | None = None, extra: dict | None = None, **tags) -> dict:
+        """Copy an audio file onto the iPod and add it to the library.
+
+        ``extra`` is merged into the track dict last (e.g. Comment, year,
+        track_number), overriding anything read from the file's own tags.
+        """
         from mutagen import File as MutagenFile
 
         src = Path(src)
@@ -110,16 +131,14 @@ class IPod:
         if audio is None:
             raise ValueError(f"Not a readable audio file: {src}")
 
-        music = self.mount / "iPod_Control" / "Music"
-        folder = random.choice(sorted(d for d in music.iterdir() if d.is_dir()))
-        while True:
-            dest = folder / ("".join(random.choices(string.ascii_uppercase, k=4)) + ext)
-            if not dest.exists():
-                break
+        dest = dest or self.alloc_path(ext)
         shutil.copyfile(src, dest)
 
         def tag(key: str) -> str | None:
-            return (audio.tags or {}).get(key, [None])[0] if audio.tags else None
+            try:
+                return (audio.tags.get(key) or [None])[0] if audio.tags else None
+            except KeyError:
+                return None
 
         now = int(time.time())
         track = {
@@ -140,9 +159,22 @@ class IPod:
             "track_id": max((t.get("track_id", 0) for t in self.tracks), default=0) + 1,
             "db_track_id": secrets.randbits(63) | 1,
         }
+        track.update({k: v for k, v in (extra or {}).items() if v is not None})
         self.tracks.append(track)
         self._master()["items"].append({"track_id": track["track_id"]})
         return track
+
+    def set_playlist_tracks(self, name: str, tracks: list[dict]) -> dict:
+        """Create or replace a plain playlist so it holds exactly ``tracks``, in order."""
+        items = [{"track_id": t["track_id"]} for t in tracks]
+        existing = next((p for p in self.user_playlists()
+                         if p.get("Title") == name and not p.get("smart_playlist_rules")), None)
+        if existing is None:
+            return self.create_playlist(name, tracks)
+        for p in self.playlists:  # every mirrored copy
+            if p.get("playlist_id") == existing.get("playlist_id"):
+                p["items"] = [dict(i) for i in items]
+        return existing
 
     def remove_track(self, track: dict, delete_file: bool = True) -> None:
         self.tracks.remove(track)
@@ -167,12 +199,23 @@ class IPod:
 
     # ── write ───────────────────────────────────────────────────────────
     def snapshot(self) -> Path:
-        dest = self.snapshot_root / time.strftime("%Y%m%d-%H%M%S")
+        # The first snapshot of a session is the state from before it touched anything. It is rotated apart from
+        # the per-save ones, which a long batched sync would otherwise push out within minutes.
+        first, self._snapshotted = not self._snapshotted, True
+        dest = self.snapshot_root / (time.strftime("%Y%m%d-%H%M%S") + ("-start" if first else ""))
         n = 0
         while dest.exists():
             n += 1
             dest = dest.with_name(f"{dest.name.split('_')[0]}_{n}")
-        shutil.copytree(self.itunes_dir, dest / "iTunes", copy_function=shutil.copyfile)
+        # AppleDouble files and the engine's short-lived probe files are not part of the database
+        shutil.copytree(self.itunes_dir, dest / "iTunes", copy_function=shutil.copyfile,
+                        ignore=shutil.ignore_patterns("._*", ".iOpenPod_*"))
+        if self.artwork_db.exists():  # the index only: thumbnails already in the .ithmb files are never rewritten
+            shutil.copyfile(self.artwork_db, dest / "ArtworkDB")
+        snapshots = sorted(p for p in self.snapshot_root.iterdir() if p.is_dir())
+        for kind in (True, False):
+            for old in [p for p in snapshots if ("-start" in p.name) == kind][:-self.keep_snapshots]:
+                shutil.rmtree(old, ignore_errors=True)
         return dest
 
     def restore(self, snapshot: Path) -> None:
@@ -181,12 +224,20 @@ class IPod:
                 target = self.itunes_dir / f.relative_to(snapshot / "iTunes")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(f, target)
+        if (snapshot / "ArtworkDB").exists():
+            shutil.copyfile(snapshot / "ArtworkDB", self.artwork_db)
 
-    def save(self) -> SaveReport:
+    def save(self, artwork_sources: dict[int, str] | None = None) -> SaveReport:
+        """Write the library. ``artwork_sources`` maps ``db_track_id`` to an audio file whose embedded cover
+        becomes the track's artwork; tracks not listed keep the artwork they have."""
+        if self._db_stamp() != self._loaded:
+            # erased, restored or synced by something else meanwhile: what is in memory describes an iPod that is gone
+            raise SaveError("the iPod's database changed since it was read (wiped or synced elsewhere?); run again")
         snap = self.snapshot()
         expected = len(self.tracks)
         try:
-            result = write_cached_itunesdb(str(self.mount), tracks_data=self.tracks, playlists_data=self.playlists)
+            result = write_cached_itunesdb(str(self.mount), tracks_data=self.tracks, playlists_data=self.playlists,
+                                           artwork_sources=artwork_sources or None)
             if not result.success:
                 raise SaveError(f"engine refused the write: {result.error}")
             sigs = self.verify()
@@ -195,7 +246,7 @@ class IPod:
             self.reload()
             if len(self.tracks) != expected:
                 raise SaveError(f"re-read {len(self.tracks)} tracks, expected {expected}")
-        except Exception:
+        except BaseException:  # Ctrl-C included: a half-written database must not survive
             log.error("save failed; restoring database from %s", snap)
             self.restore(snap)
             self.reload()
