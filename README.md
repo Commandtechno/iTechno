@@ -1,20 +1,34 @@
-# iTechno — Spotify → iPod nano 7G sync, and a programmatic iPod library manager
+# iTechno — Spotify → iPod sync, and a programmatic iPod library manager
 
 ```
-sync.py, ipod.py   the two command line tools
+sync.py, ctrl.py   the two command line tools
 ipodkit/           the library behind them: iPod database (manager, verify), sync engine, Spotify backend client
 oggify/            the Spotify backend (Rust, librespot): login, catalogue, downloads. Has its own README.
 vendor/            submodules: iOpenPod (iTunesDB engine), hashab-src (signature code, for the verifier)
 ```
 
+Supported iPods (whatever the iOpenPod engine writes): Classic, Mini, Nano 1G–7G and the full-size iPods 1G–5.5G. Shuffle and
+Touch are not supported. `manager.py` picks the database file and signing scheme from the device, and `verify.py` checks
+every save against that scheme:
+
+| Device | Database | Signature | Verified by |
+| --- | --- | --- | --- |
+| iPod 1G–5.5G, Mini, Nano 1G–2G | iTunesDB | none | header check |
+| Classic, Nano 3G–4G | iTunesDB | HASH58 | recomputed HMAC |
+| Nano 5G | iTunesCDB | HASH72 (needs `HashInfo`, created by one iTunes sync) | recomputed AES signature |
+| Nano 6G–7G | iTunesCDB + SQLite | hashAB | native hashAB build (`libhashab.dylib`) |
+
+Only the nano 7G has been run on real hardware; the other models were rehearsed on iOpenPod virtual iPods (save, verify,
+and a tamper check that verification fails on a corrupted database).
+
 Setup: `git clone --recurse-submodules <repo> && cd <repo> && uv sync` (macOS arm64; see bottom to rebuild the verifier lib elsewhere).
 
 ```
-uv run ipod.py info | list [QUERY] | playlists | verify
-uv run ipod.py add FILE [--title --artist --album --genre] [--playlist NAME]
-uv run ipod.py edit QUERY [--title --artist --album --genre --rating 0-5]
-uv run ipod.py remove QUERY
-uv run ipod.py playlist-create NAME [QUERY ...] | playlist-delete NAME
+uv run ctrl.py info | list [QUERY] | playlists | verify
+uv run ctrl.py add FILE [--title --artist --album --genre] [--playlist NAME]
+uv run ctrl.py edit QUERY [--title --artist --album --genre --rating 0-5]
+uv run ctrl.py remove QUERY
+uv run ctrl.py playlist-create NAME [QUERY ...] | playlist-delete NAME
 ```
 
 As a library: `from ipodkit.manager import IPod` → mutate `ipod.tracks` / `ipod.playlists` (plain dicts) → `ipod.save()`.
@@ -71,7 +85,7 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
 
 ## How it works
 - `vendor/iOpenPod` — pure-Python iTunesCDB + SQLite (`iTunes Library.itlp`) reader/writer. Used as an engine; GUI unused.
-- `ipodkit/verify.py` — independent hashAB verifier (native build of `vendor/hashab-src`). hashAB embeds 23 random
+- `ipodkit/verify.py` — signature verifiers per scheme; the hashAB one is independent (native build of `vendor/hashab-src`). hashAB embeds 23 random
   bytes, so signatures are checked by recovering those bytes and recomputing. Validated against the signatures iTunes
   itself wrote to this device.
 - `ipodkit/manager.py` — `save()` snapshots the DB to `snapshots/`, writes, verifies signatures + re-parses, and

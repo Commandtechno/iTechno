@@ -40,7 +40,7 @@ from .oggify import Oggify
 log = logging.getLogger("ipodkit.sync")
 
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff", ".flac", ".ogg", ".oga", ".opus", ".wma"}
-NATIVE_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff"}  # nano plays these as-is
+NATIVE_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff"}  # iPods play these as-is
 PLAYLIST_KINDS = {"playlist", "liked", "artist"}  # sources mirrored as an iPod playlist; the rest just add tracks
 FREE_SPACE_MARGIN = 64 * 2**20
 _ID_RE = re.compile(r"(?:spotify:track:|open\.spotify\.com/track/)([0-9A-Za-z]{22})")
@@ -210,7 +210,7 @@ class Inbox:
 
 # ── files ───────────────────────────────────────────────────────────────
 def transcode(src: Path, out: Path, bitrate: int) -> Path:
-    """Transcode to AAC, which the nano plays. Reuses a finished transcode of the same source."""
+    """Transcode to AAC, which every iPod plays. Reuses a finished transcode of the same source."""
     if out.exists() and (not src.exists() or out.stat().st_mtime >= src.stat().st_mtime):
         return out
     tmp = out.with_suffix(".part.m4a")
