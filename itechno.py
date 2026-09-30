@@ -29,7 +29,10 @@ def doctor() -> int:
     print(f"  data     {paths.data_dir()}")
     ffmpeg = paths.tool("ffmpeg")
     try:
-        out = subprocess.run([ffmpeg, "-hide_banner", "-version"], capture_output=True, text=True, timeout=20).stdout
+        r = subprocess.run([ffmpeg, "-hide_banner", "-version"], capture_output=True, text=True, timeout=20)
+        if r.returncode != 0 or not r.stdout.strip():
+            raise OSError(f"exit code {r.returncode & 0xFFFFFFFF:#x} {r.stderr.strip()[:200]}")
+        out = r.stdout
         enc = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=20).stdout
         has = [c for c in ("aac_at", "aac") if f" {c} " in enc]
         line(bool(has), "ffmpeg", f"{'ffmpeg ' + out.split()[2]} · AAC encoder: {has[0] if has else 'none'} · {ffmpeg}")

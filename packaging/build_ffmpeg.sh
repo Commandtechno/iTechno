@@ -31,7 +31,9 @@ FILTERS=aresample,aformat,anull,anullsink,atrim,volume
 
 extra=()
 case "$(uname -s)" in
-  Darwin) extra+=(--enable-audiotoolbox --enable-encoder=aac_at) ;;  # aac_at: Apple's AAC encoder, better than ffmpeg's own, and a system framework
+  Darwin) extra+=(--enable-audiotoolbox --enable-encoder=aac_at) ;;
+  # a Windows build must not need MSYS2's runtime DLLs (libwinpthread, libgcc) on the user's machine
+  MINGW*|MSYS*|CYGWIN*) extra+=(--extra-ldflags=-static) ;;  # aac_at: Apple's AAC encoder, better than ffmpeg's own, and a system framework
 esac
 
 cd "$work/ffmpeg-$VERSION"
