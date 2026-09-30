@@ -73,6 +73,11 @@ def main() -> None:
                          "--collect-submodules", "ipodkit"]
     for tool in tools:
         cmd += ["--add-binary", f"{tool}{os.pathsep}bin"]
+    # wasmtime's native library is named _libwasmtime.so on Linux, which PyInstaller's lib*.so pattern does not pick up
+    import wasmtime
+    site = Path(wasmtime.__file__).parent.parent
+    for lib in Path(wasmtime.__file__).parent.rglob("_libwasmtime*"):
+        cmd += ["--add-binary", f"{lib}{os.pathsep}{lib.parent.relative_to(site)}"]
     for mod in EXCLUDES:
         cmd += ["--exclude-module", mod]
     run(*cmd)

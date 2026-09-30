@@ -14,6 +14,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 out="${1:-$here/build/ffmpeg}"
 work="$here/build/ffmpeg-src"
 mkdir -p "$out" "$work"
+out="$(cd "$out" && pwd)"  # absolute: the build below runs from the source directory
 
 tarball="$work/ffmpeg-$VERSION.tar.xz"
 if [ ! -f "$tarball" ]; then
