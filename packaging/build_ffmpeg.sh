@@ -46,7 +46,8 @@ cd "$work/ffmpeg-$VERSION"
   --enable-filter="$FILTERS" \
   "${extra[@]}"
 jobs="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
-make -j"$jobs" ffmpeg
-exe=ffmpeg; [ -f ffmpeg.exe ] && exe=ffmpeg.exe
+exe=ffmpeg
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=ffmpeg.exe ;; esac  # the make target carries the suffix on Windows
+make -j"$jobs" "$exe"
 install -m 755 "$exe" "$out/$exe"
 "$out/$exe" -hide_banner -version | head -1

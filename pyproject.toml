@@ -20,3 +20,8 @@ iopenpod = { workspace = true, editable = true }
 build = [
     "pyinstaller>=6.22.3",
 ]
+
+# iOpenPod is a Qt app and lists PyQt6 as a requirement; only its database engine is used here, never the GUI. Dropping
+# it saves ~100 MB per install and avoids platforms PyQt6 has no wheels for (Linux arm64 on older glibc).
+[tool.uv]
+override-dependencies = ["pyqt6; sys_platform == 'never'"]
