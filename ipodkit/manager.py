@@ -29,6 +29,7 @@ from iopenpod.itunesdb_writer.hash72 import read_hash_info
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.sync.quick_writes import write_cached_itunesdb
 
+from . import paths
 from .verify import verify_database
 
 log = logging.getLogger("ipodkit")
@@ -55,11 +56,11 @@ class SaveReport:
 
 
 class IPod:
-    def __init__(self, mount: str | Path, snapshot_root: str | Path = "snapshots"):
+    def __init__(self, mount: str | Path, snapshot_root: str | Path | None = None):
         self.mount = Path(mount)
         self.itunes_dir = self.mount / "iPod_Control" / "iTunes"
         self.artwork_db = self.mount / "iPod_Control" / "Artwork" / "ArtworkDB"
-        self.snapshot_root = Path(snapshot_root)
+        self.snapshot_root = Path(snapshot_root) if snapshot_root else paths.snapshots_dir()
         self.keep_snapshots = 5  # of each kind (see snapshot); each is ~20MB, a batched sync takes one per batch
         self._snapshotted = False
         self.device = identify_ipod_at_path(str(self.mount))

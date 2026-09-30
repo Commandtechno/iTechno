@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """iPod library manager — proof of concept.
 
-    uv run ipod.py info
-    uv run ipod.py list [QUERY]
-    uv run ipod.py playlists
-    uv run ipod.py verify
-    uv run ipod.py add FILE [--title T --artist A --album B] [--playlist NAME]
-    uv run ipod.py edit QUERY [--title T --artist A --album B --genre G --rating 0-5]
-    uv run ipod.py remove QUERY
-    uv run ipod.py playlist-create NAME [QUERY ...]
-    uv run ipod.py playlist-delete NAME
+    uv run ctrl.py info
+    uv run ctrl.py list [QUERY]
+    uv run ctrl.py playlists
+    uv run ctrl.py verify
+    uv run ctrl.py add FILE [--title T --artist A --album B] [--playlist NAME]
+    uv run ctrl.py edit QUERY [--title T --artist A --album B --genre G --rating 0-5]
+    uv run ctrl.py remove QUERY
+    uv run ctrl.py playlist-create NAME [QUERY ...]
+    uv run ctrl.py playlist-delete NAME
 """
 from __future__ import annotations
 

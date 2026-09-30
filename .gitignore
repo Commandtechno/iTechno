@@ -12,3 +12,7 @@ __pycache__/
 
 # native hashAB verifier built on first use for other OS/CPU combinations
 ipodkit/libhashab-*
+
+# release builds
+dist/
+packaging/build/

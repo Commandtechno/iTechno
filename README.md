@@ -7,6 +7,23 @@ oggify/            the Spotify backend (Rust, librespot): login, catalogue, down
 vendor/            submodules: iOpenPod (iTunesDB engine), hashab-src (signature code, for the verifier)
 ```
 
+## Download (no setup)
+Grab the archive for your system from the [Releases](../../releases) page, unpack it and run it: one file, with the
+Spotify backend, a minimal ffmpeg and the signature library inside. Nothing to install.
+
+```
+tar -xzf itechno-macos-arm64.tar.gz && ./itechno doctor     # macOS / Linux; Windows: unzip, then itechno.exe doctor
+./itechno                    # the interactive sync (what `uv run sync.py` does below)
+./itechno ipod list          # the library manager (what `uv run ctrl.py` does below)
+```
+`itechno doctor` checks that every bundled tool works on your machine and shows where your data goes (macOS
+`~/Library/Application Support/iTechno`, Windows `%LOCALAPPDATA%\iTechno`, Linux `~/.local/share/iTechno`, or `$ITECHNO_HOME`).
+The first launch takes a couple of seconds while it unpacks itself. The builds are not code-signed: on macOS, a browser
+download is quarantined (run `xattr -d com.apple.quarantine itechno`, or fetch it with `curl`); on Windows, SmartScreen
+asks you to confirm.
+Build one yourself with `uv run --group build python packaging/build.py` (needs `cargo` and a C compiler; `packaging/build_ffmpeg.sh` builds
+the ffmpeg: LGPL, only the audio formats used here). CI builds all platforms when a `v*` tag is pushed (`.github/workflows/release.yml`).
+
 Supported iPods (whatever the iOpenPod engine writes): Classic, Mini, Nano 1G–7G and the full-size iPods 1G–5.5G. Shuffle and
 Touch are not supported. `manager.py` picks the database file and signing scheme from the device, and `verify.py` checks
 every save against that scheme:

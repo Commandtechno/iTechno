@@ -31,12 +31,16 @@ from pathlib import Path
 
 from iopenpod.device import ChecksumType
 
+from . import paths
+
 
 _SUFFIX = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
 _SOURCES = Path(__file__).resolve().parents[1] / "vendor" / "hashab-src" / "src"
 
 
 def _build(out: Path) -> None:
+    if paths.FROZEN:
+        raise RuntimeError(f"This release lacks the hashAB library for this system ({out.name}); please report it")
     cc = next((c for c in ("cc", "clang", "gcc") if shutil.which(c)), None)
     if cc is None:
         raise RuntimeError(f"Checking nano 6G/7G signatures needs a C compiler (clang or gcc) to build {out.name} "
@@ -54,8 +58,8 @@ def _lib() -> ctypes.CDLL:
     otherwise one compiled from vendor/hashab-src on first use (for this OS and CPU) and kept next to it."""
     here = Path(__file__).parent
     built = here / f"libhashab-{platform.machine().lower()}{_SUFFIX}"
-    for path in (here / "libhashab.dylib", built):
-        if path.exists():
+    for path in (paths.bundled(f"libhashab{_SUFFIX}"), here / "libhashab.dylib", built):
+        if path and path.exists():
             try:
                 return ctypes.CDLL(str(path))
             except OSError:  # another OS or CPU

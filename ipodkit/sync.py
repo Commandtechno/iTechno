@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import paths
 from .manager import IPod
 from .oggify import Oggify
 
@@ -214,9 +215,9 @@ def transcode(src: Path, out: Path, bitrate: int) -> Path:
     if out.exists() and (not src.exists() or out.stat().st_mtime >= src.stat().st_mtime):
         return out
     tmp = out.with_suffix(".part.m4a")
-    encoders = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    encoders = subprocess.run([paths.tool("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
     codec = "aac_at" if " aac_at " in encoders else "aac"  # Apple's encoder where available
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vn", "-map_metadata", "-1",
+    r = subprocess.run([paths.tool("ffmpeg"), "-y", "-loglevel", "error", "-i", str(src), "-vn", "-map_metadata", "-1",
                         "-c:a", codec, "-b:a", f"{bitrate}k", "-movflags", "+faststart", str(tmp)],
                        capture_output=True, text=True)
     if r.returncode != 0:
