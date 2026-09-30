@@ -63,7 +63,7 @@ def main() -> None:
     a = ap.parse_args()
 
     BUILD.mkdir(parents=True, exist_ok=True)
-    tools = [build_oggify(), build_ffmpeg(), build_hashab()]
+    tools = [t.resolve() for t in (build_oggify(), build_ffmpeg(), build_hashab())]  # PyInstaller resolves relative paths against the spec folder
     name = f"itechno-{OS}-{CPU}"
 
     cmd: list[object] = [sys.executable, "-m", "PyInstaller", ROOT / "itechno.py", "--name", name, "--noconfirm", "--clean",
