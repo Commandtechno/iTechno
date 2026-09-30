@@ -1,14 +1,15 @@
-"""Programmatic library management for an iPod nano 7G.
+"""Programmatic library management for iPods: Classic, Mini, Nano 1G-7G and the pre-Classic full-size models.
+(Shuffle and Touch are not supported by the engine.)
 
 Thin layer over iOpenPod's engine (https://github.com/TheRealSavi/iOpenPod):
 load the library as plain dicts, mutate, save. Every save is
 
   1. preceded by a snapshot of the on-device database directory,
-  2. followed by an independent hashAB verification (see verify.py) plus a
+  2. followed by an independent signature verification for the device's scheme (see verify.py) plus a
      re-parse of what was written, and
   3. rolled back from the snapshot automatically if either check fails,
 
-because a nano that sees a bad signature refuses the whole library.
+because an iPod that sees a bad signature refuses the whole library.
 """
 from __future__ import annotations
 
@@ -22,15 +23,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import iopenpod.itunesdb_writer.hashab as _hashab
-from iopenpod.device import identify_ipod_at_path, set_current_device
+from iopenpod.device import (ChecksumType, capabilities_for_family_gen, identify_ipod_at_path, resolve_itdb_path,
+                             set_current_device)
+from iopenpod.itunesdb_writer.hash72 import read_hash_info
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
 from iopenpod.sync.quick_writes import write_cached_itunesdb
 
-from .verify import verify_itunes_dir
+from .verify import verify_database
 
 log = logging.getLogger("ipodkit")
 
-# iOpenPod 1.68 signs the header with hashing_scheme=4 and then patches the
+# hashAB only (nano 6G/7G). iOpenPod 1.68 signs the header with hashing_scheme=4 and then patches the
 # field to 3 *after* signing. The field is covered by the SHA1, so the result
 # never verifies. iTunes signs with 3 in place (proven by replaying iTunes' own
 # signatures through verify.py), so sign with 3.
@@ -65,12 +68,25 @@ class IPod:
         # The engine resolves capabilities (iTunesCDB compression, SQLite,
         # checksum type) from this registry and silently degrades without it.
         set_current_device(self.device)
-        self.fwid = bytes.fromhex(self.device.firewire_guid)
+        self.caps = capabilities_for_family_gen(
+            self.device.model_family, self.device.generation or "",
+            capacity=self.device.capacity or None, model_number=self.device.model_number or None)
+        if self.caps is None:
+            raise RuntimeError(f"Unrecognised iPod model: {self.device.model_family} {self.device.generation}")
+        if self.caps.is_shuffle:
+            raise RuntimeError("iPod Shuffle databases (iTunesSD) are not supported by the engine")
+        self.checksum: ChecksumType = self.caps.checksum
+        self.fwid = bytes.fromhex(self.device.firewire_guid or "")
+        if self.checksum in (ChecksumType.HASH58, ChecksumType.HASHAB) and len(self.fwid) < 8:
+            raise RuntimeError(f"{self.device.model_family} {self.device.generation} databases are signed with the "
+                               "FireWire ID, which could not be read from this iPod")
+        # iTunesCDB on nano 5G and later, iTunesDB on everything before
+        self.db_path = Path(resolve_itdb_path(str(self.mount)) or self.itunes_dir / "iTunesDB")
         self.reload()
 
     # ── read ────────────────────────────────────────────────────────────
     def reload(self) -> None:
-        lib = load_ipod_library(str(self.itunes_dir / "iTunesCDB"))
+        lib = load_ipod_library(str(self.db_path))
         if lib is None:
             raise RuntimeError("Could not parse the iPod database")
         self._loaded = self._db_stamp()
@@ -78,11 +94,11 @@ class IPod:
         self.playlists: list[dict] = [p for k in PLAYLIST_KEYS for p in lib.get(k, [])]
 
     def _db_stamp(self) -> tuple[int, int]:
-        st = (self.itunes_dir / "iTunesCDB").stat()
+        st = self.db_path.stat()
         return st.st_mtime_ns, st.st_size
 
     def user_playlists(self) -> list[dict]:
-        # The nano mirrors each user playlist across two datasets; show one.
+        # The nano 5G+ mirrors each user playlist across two datasets; show one.
         seen: dict[int, dict] = {}
         for p in self.playlists:
             if not p.get("master_flag") and not p.get("mhsd5_type") and p.get("_mhsd_result_key") != "mhlp_smart":
@@ -103,7 +119,7 @@ class IPod:
         return next((p for p in self.user_playlists() if p.get("Title") == name), None)
 
     def verify(self) -> dict[str, bool]:
-        return verify_itunes_dir(self.itunes_dir, self.fwid)
+        return verify_database(self.mount, self.db_path, self.checksum, self.fwid)
 
     # ── mutate (in memory until save) ───────────────────────────────────
     def alloc_path(self, ext: str) -> Path:
@@ -126,7 +142,7 @@ class IPod:
         src = Path(src)
         ext = src.suffix.lower()
         if ext not in _EXT_FILETYPE:
-            raise ValueError(f"Unsupported format {ext}; the nano plays {sorted(_EXT_FILETYPE)}")
+            raise ValueError(f"Unsupported format {ext}; iPods play {sorted(_EXT_FILETYPE)}")
         audio = MutagenFile(src, easy=True)
         if audio is None:
             raise ValueError(f"Not a readable audio file: {src}")
@@ -233,6 +249,9 @@ class IPod:
         if self._db_stamp() != self._loaded:
             # erased, restored or synced by something else meanwhile: what is in memory describes an iPod that is gone
             raise SaveError("the iPod's database changed since it was read (wiped or synced elsewhere?); run again")
+        if self.checksum == ChecksumType.HASH72 and read_hash_info(str(self.mount)) is None:
+            raise SaveError("nano 5G databases are signed with a HashInfo file, which this iPod lacks; "
+                            "sync it once with iTunes to create it")
         snap = self.snapshot()
         expected = len(self.tracks)
         try:
@@ -242,7 +261,7 @@ class IPod:
                 raise SaveError(f"engine refused the write: {result.error}")
             sigs = self.verify()
             if not all(sigs.values()):
-                raise SaveError(f"written database fails hashAB verification: {sigs}")
+                raise SaveError(f"written database fails {self.checksum.name} verification: {sigs}")
             self.reload()
             if len(self.tracks) != expected:
                 raise SaveError(f"re-read {len(self.tracks)} tracks, expected {expected}")

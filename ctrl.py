@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""iPod nano 7G library manager — proof of concept.
+"""iPod library manager — proof of concept.
 
     uv run ipod.py info
     uv run ipod.py list [QUERY]
