@@ -23,14 +23,45 @@ import ctypes
 import functools
 import hashlib
 import hmac
+import platform
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from iopenpod.device import ChecksumType
 
 
+_SUFFIX = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
+_SOURCES = Path(__file__).resolve().parents[1] / "vendor" / "hashab-src" / "src"
+
+
+def _build(out: Path) -> None:
+    cc = next((c for c in ("cc", "clang", "gcc") if shutil.which(c)), None)
+    if cc is None:
+        raise RuntimeError(f"Checking nano 6G/7G signatures needs a C compiler (clang or gcc) to build {out.name} "
+                           f"once, from {_SOURCES}; none was found on PATH")
+    flags = ["-O2", "-shared"] + ([] if sys.platform == "win32" else ["-fPIC"])
+    r = subprocess.run([cc, *flags, "-o", str(out), *map(str, sorted(_SOURCES.glob("*.c")))],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"building {out.name} failed:\n{r.stderr.strip()}")
+
+
 @functools.cache
-def _lib() -> ctypes.CDLL:  # only hashAB devices need the native build
-    return ctypes.CDLL(str(Path(__file__).with_name("libhashab.dylib")))
+def _lib() -> ctypes.CDLL:
+    """The native hashAB library, needed by nano 6G/7G only: the committed macOS arm64 build if it loads here,
+    otherwise one compiled from vendor/hashab-src on first use (for this OS and CPU) and kept next to it."""
+    here = Path(__file__).parent
+    built = here / f"libhashab-{platform.machine().lower()}{_SUFFIX}"
+    for path in (here / "libhashab.dylib", built):
+        if path.exists():
+            try:
+                return ctypes.CDLL(str(path))
+            except OSError:  # another OS or CPU
+                pass
+    _build(built)
+    return ctypes.CDLL(str(built))
 
 
 # Output permutation from hashab's calcHashAB.c: sources < 23 are random bytes.

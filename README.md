@@ -16,12 +16,18 @@ every save against that scheme:
 | iPod 1G–5.5G, Mini, Nano 1G–2G | iTunesDB | none | header check |
 | Classic, Nano 3G–4G | iTunesDB | HASH58 | recomputed HMAC |
 | Nano 5G | iTunesCDB | HASH72 (needs `HashInfo`, created by one iTunes sync) | recomputed AES signature |
-| Nano 6G–7G | iTunesCDB + SQLite | hashAB | native hashAB build (`libhashab.dylib`) |
+| Nano 6G–7G | iTunesCDB + SQLite | hashAB | native hashAB build (see Platforms) |
 
 Only the nano 7G has been run on real hardware; the other models were rehearsed on iOpenPod virtual iPods (save, verify,
 and a tamper check that verification fails on a corrupted database).
 
-Setup: `git clone --recurse-submodules <repo> && cd <repo> && uv sync` (macOS arm64; see bottom to rebuild the verifier lib elsewhere).
+Setup: `git clone --recurse-submodules <repo> && cd <repo> && uv sync` (see Platforms).
+
+**Platforms:** macOS, Linux and Windows. The iPod is found on its own (macOS `/Volumes`, Linux `/proc/mounts`, Windows drive letters; 
+`--mount PATH` overrides). The only native piece is the hashAB verifier for nano 6G/7G: macOS arm64 uses the committed
+`libhashab.dylib`; anywhere else it is compiled once from `vendor/hashab-src` on first use, which needs `clang` or `gcc`
+on `PATH` (on Windows, MinGW-w64 or LLVM). Other iPod models need no compiler. `sync.py` also needs `cargo` and `ffmpeg`. Only macOS has been
+run by the author; Linux and Windows are untested.
 
 ```
 uv run ctrl.py info | list [QUERY] | playlists | verify
@@ -77,7 +83,7 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
   progress line says so. Playing music on the same account during a sync draws from the same bucket.
 - **`fetch` is the part to leave running.** At ~120 tracks/hour a big library takes hours, none of which need the
   iPod: `fetch` downloads, converts and tags everything still missing into `.state/transcoded/` (about 7 MB a track),
-  going by the iPod if it is plugged in and by what it held when last seen if not. It keeps the Mac awake while it
+  going by the iPod if it is plugged in and by what it held when last seen if not. It keeps the machine awake while it
   works, retries what failed, and can be stopped and restarted at will. The next `run` then just copies.
 - **Debugging**: every run appends to `.state/sync.log`: the plan, each request to and reply from the Spotify
   backend, the backend's own log, every import with full tracebacks for failures, and all of the iPod engine's
@@ -103,4 +109,5 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
 3. A rebuild renumbers internal IDs, strips trailing whitespace from titles, and gives album-less tracks a placeholder album.
 
 `backup/` holds the pristine pre-PoC copy of `iPod_Control/{iTunes,Device,Artwork}`.
-Rebuild the verifier lib: `clang -O2 -shared -fPIC -o ipodkit/libhashab.dylib vendor/hashab-src/src/*.c`
+Rebuild the verifier lib by hand: `clang -O2 -shared -fPIC -o ipodkit/libhashab.dylib vendor/hashab-src/src/*.c` (delete the
+old one, or a `libhashab-<cpu>` file, to make `verify.py` build it again itself).

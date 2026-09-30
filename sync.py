@@ -35,7 +35,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
-from ipodkit import sync
+from ipodkit import host, sync
 from ipodkit.manager import SaveError
 from ipodkit.oggify import Oggify, OggifyError
 
@@ -67,9 +67,7 @@ def ask(question):
 
 
 def stay_awake() -> None:
-    """Keep the Mac from idle-sleeping for as long as this process lives: a big download takes hours."""
-    if sys.platform == "darwin" and shutil.which("caffeinate"):
-        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+    host.stay_awake()
 
 
 def size(n: float) -> str:
@@ -88,8 +86,9 @@ class App:
         return og
 
     def mounts(self) -> list[Path]:
-        candidates = [self.args.mount] if self.args.mount else Path("/Volumes").iterdir()
-        return [v for v in candidates if (v / "iPod_Control" / "iTunes").is_dir()]
+        if self.args.mount:
+            return [self.args.mount] if (self.args.mount / "iPod_Control" / "iTunes").is_dir() else []
+        return host.find_ipods()
 
     @cached_property
     def ipod(self):
@@ -356,7 +355,7 @@ class App:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mount", type=Path, help="the iPod, when it is not the only one under /Volumes")
+    ap.add_argument("--mount", type=Path, help="the iPod, when more than one iPod is plugged in")
     ap.add_argument("--state", type=Path, default=ROOT / ".state")
     ap.add_argument("--snapshots", type=Path, default=ROOT / "snapshots", help="where pre-write database copies go")
     sub = ap.add_subparsers(dest="cmd")

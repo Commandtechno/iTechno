@@ -18,11 +18,12 @@ import logging
 import sys
 from pathlib import Path
 
+from ipodkit.host import find_ipods
 from ipodkit.manager import IPod
 
 
 def find_mount() -> Path:
-    hits = [v for v in Path("/Volumes").iterdir() if (v / "iPod_Control" / "iTunes").is_dir()]
+    hits = find_ipods()
     if len(hits) != 1:
         sys.exit(f"Expected exactly one mounted iPod, found {len(hits)}; pass --mount")
     return hits[0]
