@@ -1,0 +1,88 @@
+name: Release builds
+
+# One self-contained executable per platform: the app, the Spotify backend, a minimal ffmpeg and the hashAB library.
+# Push a tag like v0.1.0 to publish them as a GitHub Release. Pull requests and manual runs just build the artifacts.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml", "packaging/**", "itechno.py", "ipodkit/**", "oggify/**", "pyproject.toml", "uv.lock"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: macos-arm64, os: macos-14}
+          - {name: macos-x64, os: macos-15-intel}
+          - {name: linux-x64, os: ubuntu-22.04}       # built on an older glibc so it runs on older distros too
+          - {name: linux-arm64, os: ubuntu-22.04-arm}
+          - {name: windows-x64, os: windows-2022}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: {workspaces: oggify}
+
+      # Windows has no bash/make/gcc by default: ffmpeg and the hashAB library are built with MSYS2's MinGW toolchain.
+      - name: MSYS2 toolchain (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: base-devel diffutils make mingw-w64-x86_64-gcc curl
+      - name: Build ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: packaging/build_ffmpeg.sh packaging/build/ffmpeg
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          FFMPEG_BIN: packaging/build/ffmpeg/ffmpeg.exe
+        run: |
+          $env:PATH += ";C:\msys64\mingw64\bin"   # last, so cargo keeps the MSVC toolchain but the hashAB build finds gcc
+          uv run --group build python packaging/build.py
+
+      - name: Build
+        if: runner.os != 'Windows'
+        run: uv run --group build python packaging/build.py
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          exe=$(ls dist/itechno-* | grep -v -e sha256 -e '\.tar\.gz$' -e '\.zip$' | head -1)
+          "$exe" doctor
+          "$exe" --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: itechno-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {path: artifacts, merge-multiple: true}
+      - run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

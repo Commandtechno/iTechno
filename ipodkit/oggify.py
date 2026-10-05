@@ -17,6 +17,8 @@ import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
+from . import paths
+
 log = logging.getLogger("ipodkit.oggify")
 CRATE = Path(__file__).resolve().parents[1] / "oggify"
 SOURCE_KINDS = ("playlist", "album", "artist", "liked", "track")
@@ -30,7 +32,9 @@ def binary() -> Path:
     """The oggify executable: $OGGIFY_BIN, or the crate of this repository, (re)built when its sources are newer."""
     if env := os.environ.get("OGGIFY_BIN"):
         return Path(env)
-    exe = CRATE / "target" / "release" / ("oggify.exe" if sys.platform == "win32" else "oggify")
+    if packaged := paths.bundled("oggify" + paths.EXE):
+        return packaged
+    exe = CRATE / "target" / "release" / ("oggify" + paths.EXE)
     sources = [CRATE / "Cargo.toml", CRATE / "Cargo.lock", *(CRATE / "src").glob("*.rs")]
     if not exe.exists() or any(f.exists() and f.stat().st_mtime > exe.stat().st_mtime for f in sources):
         if not shutil.which("cargo"):

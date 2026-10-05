@@ -35,11 +35,10 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
-from ipodkit import host, sync
+from ipodkit import host, paths, sync
 from ipodkit.manager import SaveError
 from ipodkit.oggify import Oggify, OggifyError
 
-ROOT = Path(__file__).resolve().parent
 KIND_LABELS = {"playlist": "playlist", "liked": "liked songs", "album": "album", "artist": "artist", "track": "track"}
 console = Console(highlight=False)
 
@@ -356,8 +355,8 @@ class App:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mount", type=Path, help="the iPod, when more than one iPod is plugged in")
-    ap.add_argument("--state", type=Path, default=ROOT / ".state")
-    ap.add_argument("--snapshots", type=Path, default=ROOT / "snapshots", help="where pre-write database copies go")
+    ap.add_argument("--state", type=Path, default=paths.state_dir())
+    ap.add_argument("--snapshots", type=Path, default=paths.snapshots_dir(), help="where pre-write database copies go")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("playlists"); sub.add_parser("sources"); sub.add_parser("status")
     sub.add_parser("search").add_argument("query", nargs="*")

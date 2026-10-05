@@ -3,6 +3,7 @@ name = "oggify"
 version = "0.1.0"
 authors = ["Lorenzo Pistone <blaffablaffa@gmail.com>"]
 edition = "2018"
+resolver = "2"  # target-specific features (the macOS-only Bonjour one below) must not leak into other targets
 license = "MIT"
 description = "Download Spotify tracks to Ogg Vorbis format with a Premium account"
 keywords = ["spotify"]
