@@ -1,11 +1,12 @@
 name: Release builds
 
 # One self-contained executable per platform: the app, the Spotify backend, a minimal ffmpeg and the hashAB library.
-# Push a tag like v0.1.0 to publish them as a GitHub Release. Pull requests and manual runs just build the artifacts.
+# Push a tag like v0.1.0 to publish them as a GitHub Release. Commits to main and manual runs just build the artifacts.
 on:
   push:
     tags: ["v*"]
-  pull_request:
+    branches: [main]
+    # only for main: GitHub does not apply path filters to tag pushes
     paths: [".github/workflows/release.yml", "packaging/**", "itechno.py", "ipodkit/**", "oggify/**", "pyproject.toml", "uv.lock"]
   workflow_dispatch:
 
