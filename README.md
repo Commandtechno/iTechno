@@ -108,6 +108,7 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
 
 ## How it works
 - `vendor/iOpenPod` — pure-Python iTunesCDB + SQLite (`iTunes Library.itlp`) reader/writer. Used as an engine; GUI unused.
+  It follows upstream's `1.x` branch: 2.0 is a rewrite (`iPodDB`, `storage`) without the API `manager.py` builds on.
 - `ipodkit/verify.py` — signature verifiers per scheme; the hashAB one is independent (native build of `vendor/hashab-src`). hashAB embeds 23 random
   bytes, so signatures are checked by recovering those bytes and recomputing. Validated against the signatures iTunes
   itself wrote to this device.
