@@ -27,6 +27,7 @@ from iopenpod.device import (ChecksumType, capabilities_for_family_gen, identify
                              set_current_device)
 from iopenpod.itunesdb_writer.hash72 import read_hash_info
 from iopenpod.itunesdb_parser.ipod_library import load_ipod_library
+from iopenpod.itunesdb_shared.playlist_kinds import is_podcast_playlist
 from iopenpod.sync.quick_writes import write_cached_itunesdb
 
 from . import paths
@@ -108,6 +109,19 @@ class IPod:
         self._loaded = self._db_stamp()
         self.tracks: list[dict] = lib["mhlt"]
         self.playlists: list[dict] = [p for k in PLAYLIST_KEYS for p in lib.get(k, [])]
+        self._mirror_orphaned_playlists()
+
+    def _mirror_orphaned_playlists(self) -> None:
+        # The nano 6G/7G builds its playlist list from the SQLite library, which the engine writes from dataset 2
+        # only. iTunes/Music keeps user playlists in dataset 3 alone, and the engine never mirrors a dataset-3
+        # playlist back, so after one such sync every playlist but the ones created since is invisible on the device.
+        in_ds2 = {p.get("playlist_id") for p in self.playlists if p.get("_mhsd_result_key") == "mhlp"}
+        for p in list(self.playlists):
+            if (p.get("_mhsd_result_key") == "mhlp_podcast" and not p.get("master_flag") and not p.get("mhsd5_type")
+                    and p.get("playlist_id") not in in_ds2 and not is_podcast_playlist(p)):
+                in_ds2.add(p.get("playlist_id"))
+                self.playlists.append({**p, "items": [dict(i) for i in p.get("items", [])],
+                                       "_mhsd_dataset_type": 2, "_mhsd_result_key": "mhlp"})
 
     def _db_stamp(self) -> tuple[int, int]:
         st = self.db_path.stat()
