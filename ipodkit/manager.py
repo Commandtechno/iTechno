@@ -44,6 +44,21 @@ _EXT_FILETYPE = {".mp3": "MP3", ".m4a": "AAC", ".aac": "AAC", ".wav": "WAV", ".a
 PLAYLIST_KEYS = ("mhlp", "mhlp_podcast", "mhlp_smart")
 
 
+def has_lyrics(path: str | Path) -> bool:
+    """Whether an audio file embeds lyrics where an iPod reads them: an MP4 ``©lyr`` atom or an ID3 ``USLT`` frame."""
+    from mutagen import File as MutagenFile
+
+    try:
+        tags = MutagenFile(path).tags
+    except Exception:
+        return False
+    if not tags:
+        return False
+    if hasattr(tags, "getall"):  # ID3
+        return any(str(frame.text).strip() for frame in tags.getall("USLT"))
+    return any(str(text).strip() for text in tags.get("\xa9lyr", []))
+
+
 class SaveError(RuntimeError):
     pass
 
@@ -175,6 +190,8 @@ class IPod:
             "media_type": 1,
             "track_id": max((t.get("track_id", 0) for t in self.tracks), default=0) + 1,
             "db_track_id": secrets.randbits(63) | 1,
+            # the iPod shows the lyrics embedded in the file, but only looks for them when this flag says so
+            "lyrics_flag": 1 if has_lyrics(src) else 0,
         }
         track.update({k: v for k, v in (extra or {}).items() if v is not None})
         self.tracks.append(track)

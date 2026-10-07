@@ -133,6 +133,20 @@ class Oggify:
                 progress(min(i + 40, len(ids)))
         return found
 
+    def lyrics(self, ids: Iterable[str], progress: Callable[[int], None] | None = None) -> dict[str, str | None]:
+        """Plain-text lyrics per track ID, None for a track without any. IDs that could not be asked about
+        (rate limit, network…) are left out, to be asked again another time."""
+        ids, found = list(dict.fromkeys(ids)), {}
+        for i in range(0, len(ids), 40):
+            for t in self._ask("lyrics " + " ".join(ids[i:i + 40]))["lyrics"]:
+                if "error" in t:
+                    log.warning("no lyrics for %s: %s", t["id"], t["error"])
+                else:
+                    found[t["id"]] = t["text"]
+            if progress:
+                progress(min(i + 40, len(ids)))
+        return found
+
     def downloads(self, jobs: Iterable[tuple[str, Path]]) -> Iterator[tuple[str, Path, str | None]]:
         """Download tracks as Ogg Vorbis, yielding ``(id, file, error)`` as each one ends.
 
