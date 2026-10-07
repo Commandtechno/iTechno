@@ -301,7 +301,31 @@ async fn describe_track(session: &Session, albums: &Mutex<HashMap<SpotifyUri, Op
     "label": album.as_ref().map(|album| album.label.clone()),
     "copyright": album.as_ref().and_then(|album| album.copyrights.first().map(|c| c.text.clone())),
     "cover": cover,
+    "has_lyrics": track.has_lyrics,
   }))
+}
+
+/// The lyrics of a track as plain text, one line per line, or None when Spotify has none. The iPod shows them
+/// unsynced, so line timings are dropped, and so are the "♪" markers Spotify puts in instrumental gaps.
+async fn track_lyrics(session: &Session, id: &str) -> Res<Option<String>> {
+  let body = match session.spclient().get_lyrics(&parse_id(id)?).await {
+    Ok(body) => body,
+    Err(e) if e.kind == librespot_core::error::ErrorKind::NotFound => return Ok(None),
+    Err(e) => return Err(e.into()),
+  };
+  let reply: Value = serde_json::from_slice(&body)?;
+  let lines = reply["lyrics"]["lines"].as_array().into_iter().flatten();
+  let mut text = String::new();
+  for words in lines.filter_map(|line| line["words"].as_str()) {
+    let words = words.trim().trim_matches('♪').trim();
+    // an empty line separates verses: keep one, wherever a gap was
+    if !words.is_empty() || !text.ends_with("\n\n") {
+      text.push_str(words);
+      text.push('\n');
+    }
+  }
+  let text = text.trim().to_owned();
+  Ok(if text.is_empty() { None } else { Some(text) })
 }
 
 async fn handle(session: &Session, albums: &Mutex<HashMap<SpotifyUri, Option<Album>>>, request: &str) -> Res<Value> {
@@ -377,6 +401,27 @@ async fn handle(session: &Session, albums: &Mutex<HashMap<SpotifyUri, Option<Alb
         .await;
       Ok(json!({ "tracks": tracks }))
     }
+    ("lyrics", ids) => {
+      let lyrics = stream::iter(ids.split_whitespace())
+        .map(|id| async move {
+          let mut wait = Duration::from_secs(2);
+          loop {
+            match track_lyrics(session, id).await {
+              Ok(text) => break json!({"id": id, "text": text}),
+              Err(e) if e.to_string().contains("rate limited") && wait <= Duration::from_secs(32) => {
+                debug!("Lyrics of {} are rate limited, retrying in {}s", id, wait.as_secs());
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+              }
+              Err(e) => break json!({"id": id, "error": e.to_string()}),
+            }
+          }
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
+      Ok(json!({ "lyrics": lyrics }))
+    }
     _ => Err(format!("Bad request: {}", request).into()),
   }
 }
@@ -387,6 +432,7 @@ async fn handle(session: &Session, albums: &Mutex<HashMap<SpotifyUri, Option<Alb
 ///                                 -> {"name", "tracks": [ID]}
 ///   search QUERY                  -> {"tracks": [ID]}
 ///   tracks ID...                  -> {"tracks": [{"id", "name", "isrc", ...} or {"id", "error"}]}
+///   lyrics ID...                  -> {"lyrics": [{"id", "text"} or {"id", "error"}]}: plain text, "text" null if none
 ///   download ID DEST_FILE         -> {"file", "format", "actual_id"}: fetch a track as Ogg Vorbis; may be preceded
 ///                                    by {"event": "waiting", "seconds"} lines while Spotify's rate limit is waited out
 ///   limits                        -> {"interval", "available"}: the rate limit on downloads as currently modelled

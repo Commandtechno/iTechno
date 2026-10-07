@@ -23,6 +23,7 @@ from __future__ import annotations
 import calendar
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -36,7 +37,7 @@ from pathlib import Path
 
 from . import paths
 from .manager import IPod
-from .oggify import Oggify
+from .oggify import Oggify, OggifyError
 
 log = logging.getLogger("ipodkit.sync")
 
@@ -44,6 +45,7 @@ AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff", ".flac", ".ogg", 
 NATIVE_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff"}  # iPods play these as-is
 PLAYLIST_KINDS = {"playlist", "liked", "artist"}  # sources mirrored as an iPod playlist; the rest just add tracks
 FREE_SPACE_MARGIN = 64 * 2**20
+LYRICS_RECHECK = 30 * 86400  # how long "Spotify has no lyrics for this" is believed before asking again
 _ID_RE = re.compile(r"(?:spotify:track:|open\.spotify\.com/track/)([0-9A-Za-z]{22})")
 _BARE_ID_RE = re.compile(r"(?<![0-9A-Za-z])([0-9A-Za-z]{22})(?![0-9A-Za-z])")
 _ISRC_RE = re.compile(r"\bisrc:([A-Z0-9]{12})\b")
@@ -82,6 +84,7 @@ class State:
             create table if not exists tracks(id text primary key, meta text);
             create table if not exists mirrored(playlist text primary key);
             create table if not exists ipod_index(comment text);
+            create table if not exists lyrics(id text primary key, text text, fetched integer);
         """)
 
     # what the user chose to keep on the iPod
@@ -120,6 +123,21 @@ class State:
     def cache_tracks(self, tracks: list[dict]) -> None:
         with self.db:
             self.db.executemany("insert or replace into tracks values(?,?)", [(t["id"], json.dumps(t)) for t in tracks])
+
+    # lyrics, and the absence of any, which is asked about again after a while: Spotify adds lyrics over time
+    def cached_lyrics(self, ids: list[str]) -> dict[str, str | None]:
+        found, fresh = {}, int(time.time()) - LYRICS_RECHECK
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            rows = self.db.execute(f"select id, text from lyrics where id in ({','.join('?' * len(chunk))}) "
+                                   "and (text is not null or fetched > ?)", [*chunk, fresh])
+            found.update(dict(rows))
+        return found
+
+    def cache_lyrics(self, lyrics: dict[str, str | None]) -> None:
+        with self.db:
+            self.db.executemany("insert or replace into lyrics values(?,?,?)",
+                                [(sid, text, int(time.time())) for sid, text in lyrics.items()])
 
     # what the iPod held when last seen (the Comments of its synced tracks), to plan downloads while it is away
     def ipod_index(self) -> list[str]:
@@ -243,7 +261,7 @@ def fetch_cover(meta: dict, state: State) -> Path | None:
     return out
 
 
-def tag(m4a: Path, meta: dict, cover: Path | None, comment: str) -> None:
+def tag(m4a: Path, meta: dict, cover: Path | None, comment: str, lyrics: str | None = None) -> None:
     """Make the file self-describing, so that it stays identifiable without the iPod database."""
     from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 
@@ -262,6 +280,8 @@ def tag(m4a: Path, meta: dict, cover: Path | None, comment: str) -> None:
             f[f"----:com.apple.iTunes:{key.upper()}"] = MP4FreeForm(meta[key].encode())
     if cover:
         f["covr"] = [MP4Cover(cover.read_bytes(), MP4Cover.FORMAT_JPEG)]
+    if lyrics:  # where the iPod reads them from; add_track sees them and sets the database flag that says so
+        f["\xa9lyr"] = lyrics
     f.save()
 
 
@@ -281,6 +301,7 @@ class Events:
     def metadata_progress(self, done: int, total: int) -> None: ...
     def import_start(self, index: int, total: int, meta: dict) -> None: ...
     def import_end(self, meta: dict, error: str | None) -> None: ...
+    def lyrics_progress(self, done: int, total: int) -> None: ...
     def saving(self) -> None: ...
 
 
@@ -290,6 +311,7 @@ class Group:
     sids: list[str]
     isrc: str | None
     meta: dict | None  # of the first ID that could be described
+    lyrics: str | None = None
 
 
 @dataclass
@@ -303,6 +325,7 @@ class Plan:
     unavailable: list[tuple[str, str]] = field(default_factory=list)  # (track ID, why)
     prunable: list[dict] = field(default_factory=list)  # synced iPod tracks that no source wants any more
     stale_playlists: list[str] = field(default_factory=list)  # mirrored playlists whose source is gone
+    add_lyrics: list[Group] = field(default_factory=list)  # on the iPod without lyrics, which Spotify now has
 
     def download_bytes(self, bitrate: int) -> int:
         return sum(g.meta["duration_ms"] * bitrate // 8 for g in self.download)
@@ -344,7 +367,36 @@ def _prunable(ipod: IPod, plan: Plan) -> list[dict]:
             and not wanted_sids.intersection(sids) and isrc_of(t) not in wanted_isrcs]
 
 
-def make_plan(ipod: IPod | AbsentIPod, state: State, og: Oggify, events: Events = Events()) -> Plan:
+def _lyrics_id(g: Group) -> str:
+    return g.meta["id"] if g.meta else g.sids[0]
+
+
+def _plan_lyrics(plan: Plan, ipod: IPod | AbsentIPod, state: State, og: Oggify, events: Events) -> None:
+    """Find lyrics for what is to be downloaded, and for synced iPod tracks that have none yet."""
+    by_sid, by_isrc = _index(ipod)
+    backfill = [g for g in plan.present + [g for g, _ in plan.relabel] if (t := _on_ipod(g, by_sid, by_isrc))
+                and not t.get("lyrics_flag") and str(t.get("Location", "")).lower().endswith(".m4a")]
+    wanted = [g for g in plan.download + backfill if (g.meta or {}).get("has_lyrics") is not False]
+    found = state.cached_lyrics([_lyrics_id(g) for g in wanted])
+    unknown = list(dict.fromkeys(_lyrics_id(g) for g in wanted if _lyrics_id(g) not in found))
+    if unknown:
+        events.phase(f"Fetching lyrics for {len(unknown)} tracks")
+        try:
+            fetched = og.lyrics(unknown, lambda done: events.metadata_progress(done, len(unknown)))
+        except OggifyError:  # lyrics are a nicety: never the reason a sync does not happen
+            if og.proc.poll() is not None:
+                raise
+            log.exception("lyrics lookup failed")
+            fetched = {}
+        state.cache_lyrics(fetched)
+        found.update(fetched)
+    for g in wanted:
+        g.lyrics = found.get(_lyrics_id(g))
+    plan.add_lyrics = [g for g in backfill if g.lyrics]
+
+
+def make_plan(ipod: IPod | AbsentIPod, state: State, og: Oggify, events: Events = Events(), *,
+              lyrics: bool = True) -> Plan:
     """Resolve the sources and diff them against the iPod. Touches nothing.
 
     Any source that fails to resolve aborts the run: a partial view of what is
@@ -390,11 +442,14 @@ def make_plan(ipod: IPod | AbsentIPod, state: State, og: Oggify, events: Events 
         else:
             plan.unavailable += [(s, meta.get(s, {}).get("error", "no metadata")) for s in g.sids]
     plan.prunable = _prunable(ipod, plan)
+    if lyrics:
+        _plan_lyrics(plan, ipod, state, og, events)
     names = {name for name, _ in playlists}
     plan.stale_playlists = sorted(n for n in state.mirrored() - names if ipod.find_playlist(n))
     log.info("plan: sources=%s wanted=%d recordings=%d present=%d relabel=%d download=%d unavailable=%s prunable=%d "
-             "stale_playlists=%s", state.sources(), len(desired), len(plan.groups), len(plan.present),
-             len(plan.relabel), len(plan.download), plan.unavailable, len(plan.prunable), plan.stale_playlists)
+             "stale_playlists=%s lyrics=%d add_lyrics=%d", state.sources(), len(desired), len(plan.groups),
+             len(plan.present), len(plan.relabel), len(plan.download), plan.unavailable, len(plan.prunable),
+             plan.stale_playlists, sum(1 for g in plan.download if g.lyrics), len(plan.add_lyrics))
     return plan
 
 
@@ -415,6 +470,7 @@ class Report:
     failed: list[tuple[str, str]] = field(default_factory=list)
     pruned: list[str] = field(default_factory=list)
     orphans_removed: int = 0
+    lyrics_added: int = 0  # to tracks already on the iPod
     ipod_full: bool = False
     playlists: dict[str, tuple[int, int]] = field(default_factory=dict)  # name -> (on iPod, in playlist)
 
@@ -444,10 +500,36 @@ def recover(ipod: IPod, state: State) -> int:
     return removed
 
 
+def embed_lyrics(ipod: IPod, state: State, track: dict, lyrics: str) -> None:
+    """Add lyrics to the file of a track already on the iPod, and flag them in the (unsaved) database.
+
+    The file is tagged as a copy that then replaces it, so it is never half-written; the copy is journaled, so
+    that a crash leaves no orphan. Until the next save the database records the old size, which a crash would
+    leave behind, but the flag is not set either then, so the next run simply does it again.
+    """
+    from mutagen.mp4 import MP4
+
+    f = ipod.mount.joinpath(*track["Location"].strip(":").split(":"))
+    if shutil.disk_usage(ipod.mount).free - f.stat().st_size < FREE_SPACE_MARGIN:
+        raise IPodFull
+    tmp = f.with_name(f"{f.stem}.lyrics{f.suffix}")
+    state.journal_add(tmp, "")
+    try:
+        shutil.copyfile(f, tmp)
+        m = MP4(tmp)
+        m["\xa9lyr"] = lyrics
+        m.save()
+        os.replace(tmp, f)
+    finally:
+        tmp.unlink(missing_ok=True)
+        state.journal_clear([tmp])
+    track["size"], track["lyrics_flag"] = f.stat().st_size, 1
+
+
 def _prepare(ogg: Path, g: Group, state: State, bitrate: int, artwork: bool) -> Path:
     """Downloaded Ogg -> tagged AAC, ready for the iPod. The Ogg is not needed after that."""
     m4a = transcode(ogg, ready_file(state, g), bitrate)
-    tag(m4a, g.meta, fetch_cover(g.meta, state) if artwork else None, comment_for(g.sids, g.isrc))
+    tag(m4a, g.meta, fetch_cover(g.meta, state) if artwork else None, comment_for(g.sids, g.isrc), g.lyrics)
     ogg.unlink(missing_ok=True)
     return m4a
 
@@ -575,7 +657,7 @@ def run(ipod: IPod, state: State, og: Oggify, plan: Plan, *, prune: bool = False
         m4a = ready_file(state, g)
         # tagged again: the group may have grown since the file was prepared
         attempt(g, index, lambda: (tag(m4a, g.meta, fetch_cover(g.meta, state) if artwork else None,
-                                       comment_for(g.sids, g.isrc)), add(g, m4a, [m4a])))
+                                       comment_for(g.sids, g.isrc), g.lyrics), add(g, m4a, [m4a])))
 
     by_first_sid = {g.sids[0]: g for g in to_download}
     jobs = [(sid, state.root / "downloads" / f"{sid}.ogg") for sid in by_first_sid]
@@ -593,9 +675,24 @@ def run(ipod: IPod, state: State, og: Oggify, plan: Plan, *, prune: bool = False
             break
     flush()
 
-    # relabelling, playlists and pruning ride in one final save
+    # lyrics for tracks synced before, relabelling, playlists and pruning ride in one final save
     dirty = False
     by_sid, by_isrc = _index(ipod)
+    for i, g in enumerate(plan.add_lyrics if not rep.ipod_full else []):
+        events.lyrics_progress(i, len(plan.add_lyrics))
+        if not (t := _on_ipod(g, by_sid, by_isrc)) or t.get("lyrics_flag"):
+            continue
+        try:
+            embed_lyrics(ipod, state, t, g.lyrics)
+            rep.lyrics_added, dirty = rep.lyrics_added + 1, True
+        except IPodFull:
+            log.warning("iPod full while adding lyrics")
+            rep.ipod_full = True
+            break
+        except Exception as e:  # mutagen raises its own errors on odd files; a track without lyrics is no failure
+            if not ipod.itunes_dir.is_dir():
+                raise IPodGone from e
+            log.exception("could not add lyrics to %s", t.get("Location"))
     for g, comment in plan.relabel:
         if t := _on_ipod(g, by_sid, by_isrc):
             t["Comment"], dirty = comment, True
@@ -632,6 +729,7 @@ def run(ipod: IPod, state: State, og: Oggify, plan: Plan, *, prune: bool = False
         if f.name.split(".")[0] in on_ipod:  # kept by a run that was killed between its save and its cleanup
             f.unlink()
     state.save_ipod_index(ipod)
-    log.info("done: imported=%d from_inbox=%d failed=%d pruned=%d full=%s playlists=%s", len(rep.imported),
-             rep.from_inbox, len(rep.failed), len(rep.pruned), rep.ipod_full, rep.playlists)
+    log.info("done: imported=%d from_inbox=%d failed=%d pruned=%d lyrics_added=%d full=%s playlists=%s",
+             len(rep.imported), rep.from_inbox, len(rep.failed), len(rep.pruned), rep.lyrics_added, rep.ipod_full,
+             rep.playlists)
     return rep

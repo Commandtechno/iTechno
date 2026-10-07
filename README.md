@@ -67,7 +67,7 @@ uv run sync.py playlists           # tick your playlists and Liked Songs (type t
 uv run sync.py search QUERY        # find tracks; add them, their albums, or their artists' top tracks
 uv run sync.py add LINK|liked ...  # any Spotify link/URI: playlist, album, artist, track
 uv run sync.py sources | remove [NAME ...] | status
-uv run sync.py run [--prune] [--dry-run] [--inbox DIR] [--bitrate 256] [--no-artwork]
+uv run sync.py run [--prune] [--dry-run] [--inbox DIR] [--bitrate 256] [--no-artwork] [--no-lyrics]
 uv run sync.py fetch               # download now, sync later: the iPod does not need to be plugged in
 ```
 
@@ -77,6 +77,9 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
   order; albums and single tracks just join the library. Tracks are 256k AAC (from Spotify's 320k Vorbis) carrying
   title, artists, album, album artist, year and release date, track/disc numbers and totals, explicit and compilation
   flags, and cover art; the files themselves are tagged too (plus ISRC, label, copyright).
+- **Lyrics** come from Spotify (the same lyrics its apps show) and are embedded in each file, where the iPod reads
+  them, with the database flag that tells the iPod to look. Tracks synced before get theirs added by the next run,
+  and tracks Spotify has no lyrics for are asked about again a month later. `--no-lyrics` skips all of it.
 - **One file per recording.** Spotify lists the same recording under several track IDs (album, single,
   compilation…). Tracks are grouped by ISRC: a recording is downloaded once, and every playlist that wants any of its
   IDs points at that one file. An ID met later is attached to the file already there instead of downloaded again.
@@ -116,7 +119,7 @@ uv run sync.py fetch               # download now, sync later: the iPod does not
   restores the snapshot automatically on any failure (Ctrl-C included). The last 5 snapshots are kept, and separately
   the last 5 `-start` ones: the state from before each session touched anything.
 - `ipodkit/oggify.py` — drives `oggify serve` (the crate in `oggify/`: Rust, librespot) over a pipe: login, playlists, liked songs, search,
-  track metadata and downloads. The official Web API is not used: Spotify rate-limits it to nothing for this kind of
+  track metadata, lyrics and downloads. The official Web API is not used: Spotify rate-limits it to nothing for this kind of
   session, and it would need a developer app.
 - `ipodkit/sync.py` — the diff/plan/import engine described above; `sync.py` is only its terminal front end.
 

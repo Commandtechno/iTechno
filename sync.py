@@ -7,7 +7,7 @@
     uv run sync.py add LINK|liked ...  add by Spotify link/URI (playlist, album, artist, track)
     uv run sync.py sources             what is kept on the iPod
     uv run sync.py remove [NAME ...]   stop keeping something (interactive without names)
-    uv run sync.py run [--prune] [--dry-run] [--inbox DIR] [--bitrate 256] [--no-artwork]
+    uv run sync.py run [--prune] [--dry-run] [--inbox DIR] [--bitrate 256] [--no-artwork] [--no-lyrics]
     uv run sync.py fetch               download now, sync later: the iPod does not need to be plugged in
     uv run sync.py status
 
@@ -211,7 +211,7 @@ class App:
                 def metadata_progress(self, done, total):
                     bar.update(task, completed=done, total=total)
 
-            plan = sync.make_plan(ipod, self.state, og, Planning())
+            plan = sync.make_plan(ipod, self.state, og, Planning(), lyrics=not a.no_lyrics)
 
         ready = [g for g in plan.download if sync.ready_file(self.state, g).exists()]
         downloads = len(plan.download) - len(ready)
@@ -232,6 +232,10 @@ class App:
             table.add_row("time", f"about {duration(eta)}" + (
                 f"  (Spotify allows ~{burst} tracks right away, then one every {limits['interval']:.0f}s)"
                 if downloads > burst else ""))
+        if with_lyrics := sum(1 for g in plan.download if g.lyrics):
+            table.add_row("lyrics", f"{with_lyrics} of the tracks to download")
+        if plan.add_lyrics:
+            table.add_row("lyrics to add", f"{len(plan.add_lyrics)} tracks on the iPod")
         if plan.unavailable:
             table.add_row("not resolved", f"{len(plan.unavailable)}  (no metadata from Spotify; retried by the next run)")
         if plan.prunable or plan.stale_playlists:
@@ -250,7 +254,7 @@ class App:
         if fetch_only and not downloads:
             return console.print(f"Nothing left to download: {len(ready)} tracks are ready, sync to copy them over."
                                  if ready else "Nothing to download: the iPod has it all.")
-        if confirm and (plan.download or (prune and plan.prunable)) and not ask(questionary.confirm("Go?")):
+        if confirm and (plan.download or plan.add_lyrics or (prune and plan.prunable)) and not ask(questionary.confirm("Go?")):
             return
         stay_awake()
 
@@ -269,6 +273,9 @@ class App:
                     bar.update(task, advance=1, note="")
                     mark = f"[red]✗[/] {sync.describe(meta)}: {error}" if error else f"[green]✓[/] {sync.describe(meta)}"
                     bar.console.print("  " + mark)
+
+                def lyrics_progress(self, done, total):
+                    bar.update(task, description=f"Adding lyrics to the iPod's tracks ({done}/{total})")
 
                 def saving(self):
                     bar.update(task, description="Writing the iPod database")
@@ -307,6 +314,8 @@ class App:
             console.print("  [yellow]failed tracks are retried by the next run[/]")
         if rep.ipod_full:
             console.print("[yellow]The iPod is full: the rest was skipped.[/]")
+        if rep.lyrics_added:
+            console.print(f"  added lyrics to {rep.lyrics_added} track(s) already on the iPod")
         if rep.orphans_removed:
             console.print(f"  cleaned up {rep.orphans_removed} file(s) left by an interrupted run")
         sigs = ipod.verify()
@@ -369,9 +378,11 @@ def main() -> None:
     r.add_argument("--bitrate", type=int, default=256, help="AAC bitrate in kbit/s (default 256)")
     r.add_argument("--batch", type=int, default=20, help="tracks per database save (default 20)")
     r.add_argument("--no-artwork", action="store_true")
+    r.add_argument("--no-lyrics", action="store_true", help="do not fetch and embed lyrics")
     f = sub.add_parser("fetch")
     f.add_argument("--bitrate", type=int, default=256, help="AAC bitrate in kbit/s (default 256)")
     f.add_argument("--no-artwork", action="store_true")
+    f.add_argument("--no-lyrics", action="store_true", help="do not fetch and embed lyrics")
     a = ap.parse_args()
     if a.cmd != "run":  # the menu syncs with the defaults
         a = argparse.Namespace(**{**vars(r.parse_args([])), **vars(a)})
